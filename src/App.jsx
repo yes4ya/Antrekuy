@@ -139,7 +139,13 @@ function PublicApp() {
   return (
     <div>
       <header className="navbar">
-        <div className="nav-brand">Sistem Antrian</div>
+        <div className="nav-brand" style={{display: 'flex', alignItems: 'center', gap: '8px', fontWeight: 700, letterSpacing: '-0.5px'}}>
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" style={{color: 'var(--primary)'}}>
+            <rect x="2" y="5" width="20" height="14" rx="2" />
+            <path d="M16 2v3M8 2v3M2 10h20" />
+          </svg>
+          Antrekuy
+        </div>
         <nav className="nav-tabs">
           <button className={`tab-btn ${view === 'kiosk' ? 'active' : ''}`} onClick={() => setView('kiosk')}>Ambil Tiket</button>
           <button className={`tab-btn ${view === 'tracking' ? 'active' : ''}`} onClick={() => setView('tracking')}>Cek Status</button>
