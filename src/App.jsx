@@ -220,7 +220,6 @@ export default function App() {
             <div className="panel">
               <div className="panel-header">
                 <h2 className="panel-title">Pendaftaran Nomor Antrian</h2>
-                <span className="badge badge-neutral">Sistem Mandiri</span>
               </div>
 
               {!lastTicket ? (
