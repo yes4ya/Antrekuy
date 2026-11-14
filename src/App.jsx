@@ -27,7 +27,13 @@ export default function App() {
   const [loginForm, setLoginForm] = useState({ username: '', password: '', role: 'petugas', loket: 'Loket 1' });
 
   const [activeCounter, setActiveCounter] = useState('Loket 1');
+  const [currentTime, setCurrentTime] = useState(new Date());
   const [activeService, setActiveService] = useState('Umum');
+
+  useEffect(() => {
+    const timer = setInterval(() => setCurrentTime(new Date()), 1000);
+    return () => clearInterval(timer);
+  }, []);
 
   useEffect(() => {
     const handleStorage = () => {
@@ -566,7 +572,7 @@ export default function App() {
                 <h1 style={{fontSize: 24, fontWeight: 700, letterSpacing: '-0.5px', margin: 0}}>Antrekuy — Ruang Informasi TV</h1>
               </div>
               <div style={{fontFamily: 'var(--font-mono)', fontSize: 16, color: '#94a3b8'}}>
-                {new Date().toLocaleTimeString('id-ID')}
+                {currentTime.toLocaleTimeString('id-ID')}
               </div>
             </div>
 
