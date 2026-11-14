@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { QRCodeSVG } from 'qrcode.react';
 import { queueService, SERVICES, STATUS, SERVICE_PREFIXES } from './services/queueService';
 import { 
   Users, Ticket, Monitor, Shield, LogOut, RefreshCw, Download, 
@@ -294,6 +295,9 @@ export default function App() {
                     </div>
                   </div>
 
+                  <div style={{margin: '0 auto 20px'}}>
+                    <QRCodeSVG value={lastTicket.nomor} size={128} level="H" />
+                  </div>
                   <div style={{display: 'flex', gap: 12}}>
                     <button className="btn btn-outline btn-block" onClick={() => setLastTicket(null)}>
                       Ambil Tiket Baru
