@@ -1,512 +1,679 @@
-import React, { useState, useEffect, useMemo, createContext, useContext } from 'react';
-
-const STORAGE_KEY = "antrian:system:v8";
-const AUTH_KEY = "antrian:auth:v4";
-
-const VALID_CREDENTIALS = {
-  "Admin": { username: "admin", password: "admin123", name: "Administrator" },
-  "Petugas Loket 1": { username: "loket1", password: "loket123", name: "Loket 1" },
-  "Petugas Loket 2": { username: "loket2", password: "loket234", name: "Loket 2" },
-  "Petugas Loket 3": { username: "loket3", password: "loket345", name: "Loket 3" }
-};
-
-const AuthContext = createContext();
-
-function AuthProvider({ children }) {
-  const [user, setUser] = useState(null);
-  const [loading, setLoading] = useState(true);
-
-  useEffect(() => {
-    const stored = localStorage.getItem(AUTH_KEY);
-    if (stored) {
-      try { setUser(JSON.parse(stored)); } catch {}
-    }
-    setLoading(false);
-  }, []);
-
-  const login = (username, password, role) => {
-    const target = VALID_CREDENTIALS[role];
-    if (target && username === target.username && password === target.password) {
-      const userData = { username, role, name: target.name };
-      localStorage.setItem(AUTH_KEY, JSON.stringify(userData));
-      setUser(userData);
-      return true;
-    }
-    return false;
-  };
-
-  const logout = () => {
-    localStorage.removeItem(AUTH_KEY);
-    setUser(null);
-  };
-
-  return (
-    <AuthContext.Provider value={{ user, login, logout, loading }}>
-      {children}
-    </AuthContext.Provider>
-  );
-}
-
-function useAuth() { return useContext(AuthContext); }
-
-function loadStorage() {
-  try {
-    const data = localStorage.getItem(STORAGE_KEY);
-    return data ? JSON.parse(data) : [];
-  } catch { return []; }
-}
-
-function saveStorage(data) { localStorage.setItem(STORAGE_KEY, JSON.stringify(data)); }
-
-const STATUS = {
-  MENUNGGU: "Menunggu",
-  DILAYANI: "Dilayani",
-  SELESAI: "Selesai",
-  BATAL: "Batal"
-};
-
-const SERVICES = ["Umum", "Administrasi", "Keuangan", "Akademik"];
-const COUNTERS = ["Loket 1", "Loket 2", "Loket 3"];
+import React, { useState, useEffect } from 'react';
+import { queueService, SERVICES, STATUS, SERVICE_PREFIXES } from './services/queueService';
+import { 
+  Users, Ticket, Monitor, Shield, LogOut, RefreshCw, Download, 
+  ArrowRight, CheckCircle, AlertCircle, Clock, Volume2, UserCheck, 
+  FileText, Database, Radio
+} from 'lucide-react';
 
 export default function App() {
-  return (
-    <AuthProvider>
-      <div className="app-wrapper">
-        <AuthRouter />
-      </div>
-    </AuthProvider>
-  );
-}
+  const [view, setView] = useState('kiosk');
+  const [queueData, setQueueData] = useState(queueService.getQueue());
+  const [auth, setAuth] = useState(() => {
+    try {
+      const saved = localStorage.getItem('antrekuy_auth');
+      return saved ? JSON.parse(saved) : null;
+    } catch {
+      return null;
+    }
+  });
 
-function AuthRouter() {
-  const { user, loading } = useAuth();
-  if (loading) return <div style={{display:'flex',justifyContent:'center',alignItems:'center',minHeight:'60vh'}}>Memuat...</div>;
-  return user ? <DashboardApp user={user} /> : <PublicApp />;
-}
-
-function PublicApp() {
-  const { login } = useAuth();
-  const [view, setView] = useState("kiosk");
-  const [loginForm, setLoginForm] = useState({ username: "", password: "", role: "Petugas Loket 1" });
-  const [ticketForm, setTicketForm] = useState({ nama: "", layanan: "Umum", prioritas: "Normal" });
+  const [ticketForm, setTicketForm] = useState({ nama: '', layanan: 'Umum', prioritas: 'Normal' });
   const [lastTicket, setLastTicket] = useState(null);
-  const [trackNo, setTrackNo] = useState("");
+
+  const [trackNo, setTrackNo] = useState('');
   const [trackResult, setTrackResult] = useState(null);
-  const [list, setList] = useState(loadStorage());
+
+  const [loginForm, setLoginForm] = useState({ username: '', password: '', role: 'petugas', loket: 'Loket 1' });
+
+  const [activeCounter, setActiveCounter] = useState('Loket 1');
+  const [activeService, setActiveService] = useState('Umum');
 
   useEffect(() => {
-    const handleStorage = (e) => { if (e.key === STORAGE_KEY && e.newValue) setList(JSON.parse(e.newValue)); };
+    const handleStorage = () => {
+      setQueueData(queueService.getQueue());
+    };
     window.addEventListener('storage', handleStorage);
-    return () => window.removeEventListener('storage', handleStorage);
+
+    let channel = null;
+    try {
+      channel = new BroadcastChannel('antrekuy_sync_channel');
+      channel.onmessage = (event) => {
+        if (event.data && event.data.type === 'UPDATE') {
+          setQueueData(event.data.payload);
+        }
+      };
+    } catch (e) {
+      console.warn('BroadcastChannel not supported');
+    }
+
+    return () => {
+      window.removeEventListener('storage', handleStorage);
+      if (channel) channel.close();
+    };
   }, []);
+
+  const playChimeAndSpeak = (ticketNumber, counterName) => {
+    try {
+      const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      const osc = audioCtx.createOscillator();
+      const gain = audioCtx.createGain();
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(587.33, audioCtx.currentTime);
+      gain.gain.setValueAtTime(0.1, audioCtx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 0.8);
+      osc.connect(gain);
+      gain.connect(audioCtx.destination);
+      osc.start();
+      osc.stop(audioCtx.currentTime + 0.8);
+
+      if ('speechSynthesis' in window) {
+        window.speechSynthesis.cancel();
+        const text = `Nomor antrian, ${ticketNumber.replace('-', ' ')}, silakan menuju ke, ${counterName}`;
+        const utterance = new SpeechSynthesisUtterance(text);
+        utterance.lang = 'id-ID';
+        utterance.rate = 0.9;
+        setTimeout(() => {
+          window.speechSynthesis.speak(utterance);
+        }, 300);
+      }
+    } catch (e) {
+      console.warn('Audio announcement failed', e);
+    }
+  };
 
   const handleCreateTicket = (e) => {
     e.preventDefault();
     if (!ticketForm.nama.trim()) return;
-    const items = loadStorage();
-    const maxNum = items.reduce((m, i) => Math.max(m, i.nomor || 0), 0);
-    const newItem = {
-      id: Math.random().toString(36).slice(2, 9),
-      nomor: maxNum + 1,
-      nama: ticketForm.nama.trim(),
-      layanan: ticketForm.layanan,
-      prioritas: ticketForm.prioritas,
-      status: STATUS.MENUNGGU,
-      counter: null,
-      createdAt: Date.now()
-    };
-    const updated = [...items, newItem];
-    saveStorage(updated);
-    setList(updated);
-    setLastTicket(newItem);
-    setTicketForm({ nama: "", layanan: "Umum", prioritas: "Normal" });
+    const newT = queueService.createTicket(ticketForm.nama, ticketForm.layanan, ticketForm.prioritas);
+    setLastTicket(newT);
+    setQueueData(queueService.getQueue());
+    setTicketForm({ nama: '', layanan: 'Umum', prioritas: 'Normal' });
   };
 
   const handleTrack = (e) => {
     e.preventDefault();
-    const num = parseInt(trackNo);
-    const found = list.find(i => i.nomor === num);
-    setTrackResult(found || "not_found");
+    const query = trackNo.trim().toUpperCase();
+    const found = queueData.tickets.find(t => t.nomor.toUpperCase() === query || t.id === query);
+    setTrackResult(found || 'not_found');
   };
 
-  const handleLoginSubmit = (e) => {
+  const handleLogin = (e) => {
     e.preventDefault();
-    if (!login(loginForm.username, loginForm.password, loginForm.role)) {
-      alert("Login Gagal: Username atau Password salah untuk peran tersebut.");
+    const { username, password, role, loket } = loginForm;
+    let isValid = false;
+
+    if (role === 'admin' && username === 'admin' && password === 'admin123') {
+      isValid = true;
+    } else if (role === 'petugas') {
+      if (username === 'loket1' && password === 'loket123') isValid = true;
+      if (username === 'loket2' && password === 'loket234') isValid = true;
+      if (username === 'loket3' && password === 'loket345') isValid = true;
+    }
+
+    if (isValid) {
+      const authObj = { username, role, loket: role === 'petugas' ? loket : 'Admin Panel' };
+      setAuth(authObj);
+      localStorage.setItem('antrekuy_auth', JSON.stringify(authObj));
+      if (role === 'admin') setView('admin');
+      else {
+        setActiveCounter(loket);
+        if (loket === 'Loket 1') setActiveService('Umum');
+        else if (loket === 'Loket 2') setActiveService('Administrasi');
+        else setActiveService('Keuangan');
+        setView('staff');
+      }
+    } else {
+      alert('Autentikasi Gagal: Username atau Password salah.');
     }
   };
 
+  const handleLogout = () => {
+    setAuth(null);
+    localStorage.removeItem('antrekuy_auth');
+    setView('kiosk');
+  };
+
+  const handleCallNext = () => {
+    const res = queueService.callNext(activeCounter, activeService);
+    if (res.success) {
+      setQueueData(queueService.getQueue());
+      playChimeAndSpeak(res.ticket.nomor, activeCounter);
+    } else {
+      alert(res.message);
+    }
+  };
+
+  const handleRecall = () => {
+    const res = queueService.recallTicket(activeCounter);
+    if (res.success) {
+      playChimeAndSpeak(res.ticket.nomor, activeCounter);
+    } else {
+      alert(res.message);
+    }
+  };
+
+  const handleComplete = () => {
+    queueService.completeTicket(activeCounter);
+    setQueueData(queueService.getQueue());
+  };
+
+  const handleForward = (targetSvc) => {
+    const res = queueService.forwardTicket(activeCounter, targetSvc);
+    if (res.success) {
+      setQueueData(queueService.getQueue());
+      alert(`Tiket berhasil diteruskan ke layanan ${targetSvc}`);
+    } else {
+      alert(res.message);
+    }
+  };
+
+  const handleMiss = () => {
+    queueService.missTicket(activeCounter);
+    setQueueData(queueService.getQueue());
+  };
+
+  const waitingList = queueData.tickets.filter(t => t.status === STATUS.MENUNGGU);
+
   return (
-    <div>
+    <div className="app-container">
       <header className="navbar">
-        <div className="nav-brand" style={{display: 'flex', alignItems: 'center', gap: '8px', fontWeight: 700, letterSpacing: '-0.5px'}}>
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" style={{color: 'var(--primary)'}}>
+        <div className="nav-brand" onClick={() => setView('kiosk')} style={{cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '8px', fontWeight: 700, letterSpacing: '-0.5px'}}>
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" style={{color: 'var(--primary)'}}>
             <rect x="2" y="5" width="20" height="14" rx="2" />
             <path d="M16 2v3M8 2v3M2 10h20" />
           </svg>
           Antrekuy
         </div>
         <nav className="nav-tabs">
-          <button className={`tab-btn ${view === 'kiosk' ? 'active' : ''}`} onClick={() => setView('kiosk')}>Ambil Tiket</button>
-          <button className={`tab-btn ${view === 'tracking' ? 'active' : ''}`} onClick={() => setView('tracking')}>Cek Status</button>
-          <button className={`tab-btn ${view === 'login' ? 'active' : ''}`} onClick={() => setView('login')}>Login Petugas</button>
-        </nav>
-      </header>
-
-      {view === 'kiosk' && (
-        <section className="panel" style={{maxWidth: 500, margin: '0 auto'}}>
-          <h2 className="panel-title">{lastTicket ? "Tiket Anda" : "Ambil Nomor Antrian"}</h2>
-          {!lastTicket ? (
-            <form onSubmit={handleCreateTicket}>
-              <div className="form-group">
-                <label htmlFor="nama">Nama Lengkap</label>
-                <input id="nama" type="text" placeholder="Masukkan nama Anda" value={ticketForm.nama} onChange={e => setTicketForm({...ticketForm, nama: e.target.value})} required autoComplete="name" />
-              </div>
-              <div className="form-group">
-                <label htmlFor="layanan">Jenis Layanan</label>
-                <select id="layanan" value={ticketForm.layanan} onChange={e => setTicketForm({...ticketForm, layanan: e.target.value})}>
-                  {SERVICES.map(s => <option key={s} value={s}>{s}</option>)}
-                </select>
-              </div>
-              <div className="form-group">
-                <label htmlFor="prioritas">Kategori Antrian</label>
-                <select id="prioritas" value={ticketForm.prioritas} onChange={e => setTicketForm({...ticketForm, prioritas: e.target.value})}>
-                  <option value="Normal">Normal (Umum)</option>
-                  <option value="Prioritas">Prioritas (Lansia / Disabilitas / Ibu Hamil)</option>
-                </select>
-              </div>
-              <button type="submit" className="btn btn-primary btn-block btn-lg">Ambil Tiket</button>
-            </form>
+          <button className={`tab-btn ${view === 'kiosk' ? 'active' : ''}`} onClick={() => setView('kiosk')}>
+            <Ticket size={16} /> Ambil Tiket
+          </button>
+          <button className={`tab-btn ${view === 'tracking' ? 'active' : ''}`} onClick={() => setView('tracking')}>
+            <Clock size={16} /> Cek Status
+          </button>
+          <button className={`tab-btn ${view === 'tv' ? 'active' : ''}`} onClick={() => setView('tv')}>
+            <Monitor size={16} /> Layar TV
+          </button>
+          {auth ? (
+            <button className={`tab-btn active`} onClick={() => setView(auth.role === 'admin' ? 'admin' : 'staff')}>
+              <Shield size={16} /> {auth.loket || 'Admin'}
+            </button>
           ) : (
-            <div className="ticket-card">
-              <div style={{fontSize: 14, fontWeight: 600, color: 'var(--text-muted)', marginBottom: 8}}>NOMOR ANTRIAN ANDA</div>
-              <div className="ticket-number">#{lastTicket.nomor}</div>
-              <div className="ticket-name">{lastTicket.nama}</div>
-              <div className="ticket-meta">
-                <span className="badge {lastTicket.prioritas === 'Prioritas' ? 'badge-warning' : 'badge-wait'}">{lastTicket.prioritas}</span>
-                <span className="badge badge-wait">{lastTicket.layanan}</span>
-              </div>
-              <div style={{fontSize: 14, color: 'var(--text-muted)', marginTop: 16}}>
-                Antrian di depan: <strong>{Math.max(0, list.filter(i => i.status === STATUS.MENUNGGU).length - 1)} orang</strong>
-              </div>
-              <button className="btn btn-secondary btn-block mt-16" onClick={() => setLastTicket(null)}>Ambil Tiket Baru</button>
-            </div>
+            <button className={`tab-btn ${view === 'login' ? 'active' : ''}`} onClick={() => setView('login')}>
+              <UserCheck size={16} /> Login Petugas
+            </button>
           )}
-        </section>
-      )}
-
-      {view === 'tracking' && (
-        <section className="panel" style={{maxWidth: 500, margin: '0 auto'}}>
-          <h2 className="panel-title">Cek Status Tiket</h2>
-          <form onSubmit={handleTrack}>
-            <div className="form-group">
-              <label htmlFor="track">Nomor Tiket</label>
-              <input id="track" type="number" placeholder="Contoh: 1" value={trackNo} onChange={e => setTrackNo(e.target.value)} required />
-            </div>
-            <button type="submit" className="btn btn-primary btn-block btn-lg">Cek Status</button>
-          </form>
-
-          {trackResult === "not_found" && (
-            <div className="mt-16" style={{padding: 16, background: 'var(--danger-light)', border: '1px solid var(--danger)', borderRadius: 'var(--radius)'}}>
-              Tiket tidak ditemukan dalam sistem.
-            </div>
-          )}
-
-          {trackResult && trackResult !== "not_found" && (
-            <div className="mt-16 panel" style={{borderColor: 'var(--border-strong)'}}>
-              <div style={{display: 'grid', gap: 10}}>
-                <div><strong>Nomor:</strong> #{trackResult.nomor}</div>
-                <div><strong>Nama:</strong> {trackResult.nama}</div>
-                <div><strong>Layanan:</strong> {trackResult.layanan} ({trackResult.prioritas})</div>
-                <div><strong>Status:</strong> <span className="badge badge-{trackResult.status === 'Menunggu' ? 'wait' : trackResult.status === 'Dilayani' ? 'serving' : trackResult.status === 'Selesai' ? 'done' : 'cancel'}">{trackResult.status}</span></div>
-                <div><strong>Loket:</strong> {trackResult.counter || '—'}</div>
-              </div>
-            </div>
-          )}
-        </section>
-      )}
-
-      {view === 'login' && (
-        <section className="panel" style={{maxWidth: 420, margin: '0 auto'}}>
-          <h2 className="panel-title">Login Petugas / Administrator</h2>
-          <form onSubmit={handleLoginSubmit}>
-            <div className="form-group">
-              <label htmlFor="role">Peran</label>
-              <select id="role" value={loginForm.role} onChange={e => setLoginForm({...loginForm, role: e.target.value})}>
-                <option value="Admin">Administrator</option>
-                <option value="Petugas Loket 1">Petugas Loket 1</option>
-                <option value="Petugas Loket 2">Petugas Loket 2</option>
-                <option value="Petugas Loket 3">Petugas Loket 3</option>
-              </select>
-            </div>
-            <div className="form-group">
-              <label htmlFor="username">Username</label>
-              <input id="username" type="text" placeholder="Username" value={loginForm.username} onChange={e => setLoginForm({...loginForm, username: e.target.value})} required autoComplete="username" />
-            </div>
-            <div className="form-group">
-              <label htmlFor="password">Password</label>
-              <input id="password" type="password" placeholder="Password" value={loginForm.password} onChange={e => setLoginForm({...loginForm, password: e.target.value})} required autoComplete="current-password" />
-            </div>
-            <button type="submit" className="btn btn-primary btn-block btn-lg">Masuk</button>
-          </form>
-
-          <div className="cred-box">
-            <strong>Kredensial Login:</strong>
-            Admin: <code>admin</code> / <code>admin123</code><br/>
-            Loket 1: <code>loket1</code> / <code>loket123</code><br/>
-            Loket 2: <code>loket2</code> / <code>loket234</code><br/>
-            Loket 3: <code>loket3</code> / <code>loket345</code>
-          </div>
-        </section>
-      )}
-    </div>
-  );
-}
-
-function DashboardApp({ user }) {
-  const { logout } = useAuth();
-  const [tab, setTab] = useState("control");
-  const [list, setList] = useState(loadStorage());
-  const [activeCounter, setActiveCounter] = useState(user.role === "Admin" ? "Loket 1" : user.role.replace("Petugas ", "Loket "));
-
-  useEffect(() => {
-    const handleStorage = (e) => { if (e.key === STORAGE_KEY && e.newValue) setList(JSON.parse(e.newValue)); };
-    window.addEventListener('storage', handleStorage);
-    return () => window.removeEventListener('storage', handleStorage);
-  }, []);
-
-  const saveAndUpdate = (updated) => {
-    saveStorage(updated);
-    setList(updated);
-  };
-
-  const callNext = () => {
-    const waiting = list.filter(i => i.status === STATUS.MENUNGGU);
-    if (waiting.length === 0) return alert("Tidak ada antrian menunggu.");
-    const target = waiting[0];
-    const updated = list.map(i => i.id === target.id ? {...i, status: STATUS.DILAYANI, counter: activeCounter} : i);
-    saveAndUpdate(updated);
-
-    if ('speechSynthesis' in window) {
-      window.speechSynthesis.cancel();
-      const text = `Nomor antrian, ${target.nomor}, silakan menuju ke ${activeCounter}`;
-      const utter = new SpeechSynthesisUtterance(text);
-      utter.lang = 'id-ID';
-      window.speechSynthesis.speak(utter);
-    }
-  };
-
-  const updateStatus = (id, status) => {
-    const updated = list.map(i => i.id === id ? {...i, status} : i);
-    saveAndUpdate(updated);
-  };
-
-  const deleteItem = (id) => {
-    if (!confirm("Hapus tiket ini?")) return;
-    const updated = list.filter(i => i.id !== id);
-    saveAndUpdate(updated);
-  };
-
-  const resetAll = () => {
-    if (!confirm("Yakin ingin mereset seluruh data antrian?")) return;
-    saveAndUpdate([]);
-  };
-
-  const waitingList = list.filter(i => i.status === STATUS.MENUNGGU);
-  const servingList = list.filter(i => i.status === STATUS.DILAYANI);
-  const currentServing = servingList[0];
-
-  const badgeClassForStatus = (status) => {
-    if (status === STATUS.MENUNGGU) return 'badge-wait';
-    if (status === STATUS.DILAYANI) return 'badge-serving';
-    if (status === STATUS.SELESAI) return 'badge-done';
-    return 'badge-cancel';
-  };
-
-  return (
-    <div>
-      <header className="navbar">
-        <div className="nav-brand">Panel {user.name}</div>
-        <nav className="nav-tabs">
-          <button className={`tab-btn ${tab === 'control' ? 'active' : ''}`} onClick={() => setTab('control')}>Kontrol Loket</button>
-          <button className={`tab-btn ${tab === 'display' ? 'active' : ''}`} onClick={() => setTab('display')}>Layar TV</button>
-          {user.role === "Admin" && <button className={`tab-btn ${tab === 'stats' ? 'active' : ''}`} onClick={() => setTab('stats')}>Statistik</button>}
         </nav>
-        <div className="nav-user">
-          <span className="user-badge">{user.role}</span>
-          <button className="btn btn-secondary btn-sm" onClick={logout}>Keluar</button>
-        </div>
       </header>
 
-      {tab === 'control' && (
-        <div>
-          <div className="grid-2">
-            <section className="panel">
-              <h3 className="panel-title">Kontrol Panggilan</h3>
-              {user.role === "Admin" && (
-                <div className="form-group">
-                  <label>Loket Anda</label>
-                  <select value={activeCounter} onChange={e => setActiveCounter(e.target.value)} className="w-full">
-                    {COUNTERS.map(c => <option key={c} value={c}>{c}</option>)}
-                  </select>
+      <main className="main-content">
+        {view === 'kiosk' && (
+          <div className="view-grid" style={{maxWidth: 600, margin: '0 auto'}}>
+            <div className="panel">
+              <div className="panel-header">
+                <h2 className="panel-title">Pendaftaran Nomor Antrian</h2>
+                <span className="badge badge-neutral">Sistem Mandiri</span>
+              </div>
+
+              {!lastTicket ? (
+                <form onSubmit={handleCreateTicket}>
+                  <div className="form-group">
+                    <label htmlFor="nama">Nama Lengkap</label>
+                    <input 
+                      id="nama" 
+                      type="text" 
+                      placeholder="Masukkan nama Anda..." 
+                      value={ticketForm.nama} 
+                      onChange={e => setTicketForm({...ticketForm, nama: e.target.value})} 
+                      required 
+                      autoComplete="name"
+                    />
+                  </div>
+
+                  <div className="form-group">
+                    <label htmlFor="layanan">Pilih Jenis Layanan</label>
+                    <select 
+                      id="layanan" 
+                      value={ticketForm.layanan} 
+                      onChange={e => setTicketForm({...ticketForm, layanan: e.target.value})}
+                    >
+                      {SERVICES.map(s => (
+                        <option key={s} value={s}>Layanan {s} ({SERVICE_PREFIXES[s]})</option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div className="form-group">
+                    <label htmlFor="prioritas">Kategori Antrian</label>
+                    <select 
+                      id="prioritas" 
+                      value={ticketForm.prioritas} 
+                      onChange={e => setTicketForm({...ticketForm, prioritas: e.target.value})}
+                    >
+                      <option value="Normal">Normal (Umum)</option>
+                      <option value="Prioritas">Prioritas (Lansia / Disabilitas / Ibu Hamil)</option>
+                    </select>
+                  </div>
+
+                  <button type="submit" className="btn btn-primary btn-block btn-lg" style={{marginTop: 24}}>
+                    Cetak Nomor Antrian
+                  </button>
+                </form>
+              ) : (
+                <div className="ticket-card" style={{textAlign: 'center', padding: '32px 16px'}}>
+                  <div style={{fontSize: 13, fontWeight: 600, color: 'var(--text-muted)', letterSpacing: '1px', textTransform: 'uppercase'}}>
+                    Tiket Berhasil Dibuat
+                  </div>
+                  <div className="ticket-number" style={{fontSize: '48px', fontWeight: 800, margin: '12px 0', fontFamily: 'var(--font-mono)'}}>
+                    #{lastTicket.nomor}
+                  </div>
+                  <div style={{fontSize: 16, fontWeight: 500, marginBottom: 4}}>{lastTicket.nama}</div>
+                  <div style={{fontSize: 13, color: 'var(--text-muted)', marginBottom: 24}}>
+                    Layanan: {lastTicket.layanan} | Kategori: {lastTicket.prioritas}
+                  </div>
+
+                  <div style={{background: 'var(--bg-subtle)', padding: '16px', borderRadius: 'var(--radius-md)', marginBottom: 24, textAlign: 'left'}}>
+                    <div style={{display: 'flex', justifyContent: 'space-between', marginBottom: 8, fontSize: 13}}>
+                      <span style={{color: 'var(--text-muted)'}}>Antrian di depan Anda:</span>
+                      <strong style={{fontFamily: 'var(--font-mono)'}}>
+                        {Math.max(0, queueData.tickets.filter(t => t.layanan === lastTicket.layanan && t.status === STATUS.MENUNGGU && t.seq < lastTicket.seq).length)} orang
+                      </strong>
+                    </div>
+                    <div style={{display: 'flex', justifyContent: 'space-between', fontSize: 13}}>
+                      <span style={{color: 'var(--text-muted)'}}>Estimasi waktu tunggu:</span>
+                      <strong style={{fontFamily: 'var(--font-mono)'}}>
+                        ~{Math.max(2, queueData.tickets.filter(t => t.layanan === lastTicket.layanan && t.status === STATUS.MENUNGGU && t.seq < lastTicket.seq).length * 4)} menit
+                      </strong>
+                    </div>
+                  </div>
+
+                  <div style={{display: 'flex', gap: 12}}>
+                    <button className="btn btn-outline btn-block" onClick={() => setLastTicket(null)}>
+                      Ambil Tiket Baru
+                    </button>
+                    <button className="btn btn-primary btn-block" onClick={() => { setTrackNo(lastTicket.nomor); setView('tracking'); }}>
+                      Cek Status Live
+                    </button>
+                  </div>
                 </div>
               )}
-              <button className="btn btn-success btn-block btn-lg mt-8" onClick={callNext} disabled={waitingList.length === 0}>
-                Panggil Berikutnya ({activeCounter})
-              </button>
-              {user.role === "Admin" && (
-                <button className="btn btn-danger btn-block mt-8" onClick={resetAll}>
-                  Reset Semua Data
-                </button>
+            </div>
+          </div>
+        )}
+
+        {view === 'tracking' && (
+          <div className="view-grid" style={{maxWidth: 600, margin: '0 auto'}}>
+            <div className="panel">
+              <div className="panel-header">
+                <h2 className="panel-title">Cek Status Tiket Antrian</h2>
+                <span className="badge badge-neutral">Real-Time</span>
+              </div>
+
+              <form onSubmit={handleTrack} style={{display: 'flex', gap: 8, marginBottom: 24}}>
+                <input 
+                  type="text" 
+                  placeholder="Masukkan Nomor Antrian (cth: A-001)" 
+                  value={trackNo}
+                  onChange={e => setTrackNo(e.target.value)}
+                  style={{flex: 1}}
+                  required
+                />
+                <button type="submit" className="btn btn-primary">Cari</button>
+              </form>
+
+              {trackResult === 'not_found' && (
+                <div style={{padding: '24px', textAlign: 'center', color: 'var(--text-muted)'}}>
+                  Nomor antrian tidak ditemukan. Pastikan format nomor benar.
+                </div>
               )}
-            </section>
 
-            <section className="panel">
-              <h3 className="panel-title">Sedang Dilayani</h3>
-              <div className={`current-serving ${!currentServing ? 'empty' : ''}`}>
-                {currentServing ? (
-                  <>
-                    <div className="current-number">#{currentServing.nomor}</div>
-                    <div className="current-name">{currentServing.nama}</div>
-                    <div className="current-info">{currentServing.counter} • {currentServing.layanan}</div>
-                  </>
-                ) : (
-                  <div>
-                    <div style={{fontSize: 48, marginBottom: 8}}>—</div>
-                    <div>Belum ada panggilan</div>
-                  </div>
-                )}
-              </div>
-            </section>
-          </div>
-
-          <section className="panel">
-            <h3 className="panel-title">Daftar Antrian ({list.length})</h3>
-            <div className="table-wrap">
-              <table className="table">
-                <thead>
-                  <tr>
-                    <th>No</th>
-                    <th>Nama</th>
-                    <th>Layanan</th>
-                    <th>Kategori</th>
-                    <th>Status</th>
-                    <th>Loket</th>
-                    <th>Aksi</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {list.length === 0 ? (
-                    <tr><td colSpan={7} className="text-center" style={{padding: 40, color: 'var(--text-muted)'}}>Belum ada data antrian</td></tr>
-                  ) : (
-                    list.map(item => (
-                      <tr key={item.id}>
-                        <td>#{item.nomor}</td>
-                        <td>{item.nama}</td>
-                        <td>{item.layanan}</td>
-                        <td>{item.prioritas}</td>
-                        <td><span className={`badge ${badgeClassForStatus(item.status)}`}>{item.status}</span></td>
-                        <td>{item.counter || '—'}</td>
-                        <td>
-                          <div className="flex gap-8 flex-wrap">
-                            {item.status === STATUS.MENUNGGU && (
-                              <button className="btn btn-primary btn-sm" onClick={() => updateStatus(item.id, STATUS.DILAYANI)}>Layani</button>
-                            )}
-                            {item.status === STATUS.DILAYANI && (
-                              <button className="btn btn-success btn-sm" onClick={() => updateStatus(item.id, STATUS.SELESAI)}>Selesai</button>
-                            )}
-                            <button className="btn btn-danger btn-sm" onClick={() => deleteItem(item.id)}>Hapus</button>
-                          </div>
-                        </td>
-                      </tr>
-                    ))
-                  )}
-                </tbody>
-              </table>
-            </div>
-          </section>
-        </div>
-      )}
-
-      {tab === 'display' && (
-        <section className="tv-screen">
-          <header className="tv-header">
-            <h2 className="tv-title">Layar Informasi Antrian</h2>
-            <div className="tv-counters flex gap-8 flex-wrap">
-              {COUNTERS.map(c => (
-                <span key={c} className="tv-counter-badge">
-                  {c}
-                </span>
-              ))}
-            </div>
-          </header>
-
-          <main className="tv-main">
-            <div className="tv-number-box">
-              <div className="tv-label">Nomor Antrian Dipanggil</div>
-              <div className="tv-number">{currentServing ? `#${currentServing.nomor}` : '—'}</div>
-              <div className="tv-current-info">
-                {currentServing ? `${currentServing.nama} — ${currentServing.counter}` : 'Menunggu Panggilan'}
-              </div>
-            </div>
-
-            <div className="tv-next-section">
-              <h3 className="tv-next-title">Antrian Berikutnya</h3>
-              <div className="tv-next-list">
-                {waitingList.length === 0 ? (
-                  <div style={{textAlign: 'center', color: '#64748b', padding: 20, background: '#1e293b', border: '1px solid #334155', borderRadius: 'var(--radius)'}}>
-                    Tidak ada antrian menunggu
-                  </div>
-                ) : (
-                  waitingList.slice(0, 5).map(item => (
-                    <div key={item.id} className="tv-next-item">
-                      <div>
-                        <div className="tv-next-num">#{item.nomor}</div>
-                        <div className="tv-next-name">{item.nama}</div>
-                      </div>
-                      <span className="tv-next-service">{item.layanan}</span>
+              {trackResult && trackResult !== 'not_found' && (
+                <div style={{background: 'var(--bg-subtle)', padding: 20, borderRadius: 'var(--radius-md)'}}>
+                  <div style={{display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16}}>
+                    <div>
+                      <div style={{fontSize: 12, color: 'var(--text-muted)'}}>NOMOR ANTRIAN</div>
+                      <div style={{fontSize: 28, fontWeight: 700, fontFamily: 'var(--font-mono)'}}>#{trackResult.nomor}</div>
                     </div>
-                  ))
-                )}
-              </div>
-            </div>
-          </main>
-        </section>
-      )}
+                    <span className={`badge ${
+                      trackResult.status === STATUS.MENUNGGU ? 'badge-neutral' :
+                      trackResult.status === STATUS.DILAYANI ? 'badge-primary' :
+                      trackResult.status === STATUS.SELESAI ? 'badge-success' : 'badge-warning'
+                    }`}>
+                      {trackResult.status}
+                    </span>
+                  </div>
 
-      {tab === 'stats' && user.role === "Admin" && (
-        <section className="panel">
-          <h3 className="panel-title">Statistik & Laporan</h3>
-          <div className="stats-grid">
-            <div className="stat-card">
-              <div className="stat-label">Total Tiket</div>
-              <div className="stat-value">{list.length}</div>
-            </div>
-            <div className="stat-card">
-              <div className="stat-label">Menunggu</div>
-              <div className="stat-value warning">{waitingList.length}</div>
-            </div>
-            <div className="stat-card">
-              <div className="stat-label">Dilayani</div>
-              <div className="stat-value primary">{servingList.length}</div>
-            </div>
-            <div className="stat-card">
-              <div className="stat-label">Selesai</div>
-              <div className="stat-value success">{list.filter(i => i.status === STATUS.SELESAI).length}</div>
+                  <div style={{display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, fontSize: 13, borderTop: '1px solid var(--border)', paddingTop: 12}}>
+                    <div>
+                      <span style={{color: 'var(--text-muted)'}}>Nama:</span>
+                      <div><strong>{trackResult.nama}</strong></div>
+                    </div>
+                    <div>
+                      <span style={{color: 'var(--text-muted)'}}>Layanan:</span>
+                      <div><strong>{trackResult.layanan}</strong></div>
+                    </div>
+                    <div>
+                      <span style={{color: 'var(--text-muted)'}}>Kategori:</span>
+                      <div><strong>{trackResult.prioritas}</strong></div>
+                    </div>
+                    <div>
+                      <span style={{color: 'var(--text-muted)'}}>Loket Tujuan:</span>
+                      <div><strong>{trackResult.loket || 'Belum ditentukan'}</strong></div>
+                    </div>
+                  </div>
+                </div>
+              )}
             </div>
           </div>
-          <button className="btn btn-primary" onClick={() => {
-            const headers = "No,Nama,Layanan,Kategori,Status,Loket\\n";
-            const rows = list.map(i => `${i.nomor},"${i.nama}",${i.layanan},${i.prioritas},${i.status},${i.counter || '-'}\\n`).join('');
-            const blob = new Blob([headers + rows], { type: 'text/csv;charset=utf-8;' });
-            const url = URL.createObjectURL(blob);
-            const a = document.createElement('a');
-            a.href = url;
-            a.download = `laporan_antrian_${new Date().toISOString().slice(0,10)}.csv`;
-            a.click();
-          }}>Export Laporan CSV</button>
-        </section>
-      )}
+        )}
+
+        {view === 'login' && (
+          <div className="view-grid" style={{maxWidth: 420, margin: '0 auto'}}>
+            <div className="panel">
+              <div className="panel-header">
+                <h2 className="panel-title">Login Petugas & Admin</h2>
+              </div>
+              <form onSubmit={handleLogin}>
+                <div className="form-group">
+                  <label htmlFor="role">Peran (Role)</label>
+                  <select 
+                    id="role"
+                    value={loginForm.role}
+                    onChange={e => setLoginForm({...loginForm, role: e.target.value})}
+                  >
+                    <option value="petugas">Petugas Loket</option>
+                    <option value="admin">Administrator</option>
+                  </select>
+                </div>
+
+                {loginForm.role === 'petugas' && (
+                  <div className="form-group">
+                    <label htmlFor="loket">Pilih Loket</label>
+                    <select 
+                      id="loket"
+                      value={loginForm.loket}
+                      onChange={e => setLoginForm({...loginForm, loket: e.target.value})}
+                    >
+                      <option value="Loket 1">Loket 1 (Layanan Umum)</option>
+                      <option value="Loket 2">Loket 2 (Layanan Administrasi)</option>
+                      <option value="Loket 3">Loket 3 (Layanan Keuangan)</option>
+                    </select>
+                  </div>
+                )}
+
+                <div className="form-group">
+                  <label htmlFor="username">Username</label>
+                  <input 
+                    id="username"
+                    type="text"
+                    value={loginForm.username}
+                    onChange={e => setLoginForm({...loginForm, username: e.target.value})}
+                    placeholder="Masukkan username..."
+                    required
+                  />
+                </div>
+
+                <div className="form-group">
+                  <label htmlFor="password">Password</label>
+                  <input 
+                    id="password"
+                    type="password"
+                    value={loginForm.password}
+                    onChange={e => setLoginForm({...loginForm, password: e.target.value})}
+                    placeholder="Masukkan password..."
+                    required
+                  />
+                </div>
+
+                <button type="submit" className="btn btn-primary btn-block" style={{marginTop: 16}}>
+                  Masuk Sistem
+                </button>
+              </form>
+
+              <div style={{marginTop: 16, fontSize: 12, color: 'var(--text-muted)', borderTop: '1px solid var(--border)', paddingTop: 12}}>
+                <strong>Kredensial Demo:</strong><br />
+                Admin: <code>admin</code> / <code>admin123</code><br />
+                Loket 1: <code>loket1</code> / <code>loket123</code><br />
+                Loket 2: <code>loket2</code> / <code>loket234</code><br />
+                Loket 3: <code>loket3</code> / <code>loket345</code>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {view === 'staff' && auth && (
+          <div>
+            <div style={{display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20}}>
+              <div>
+                <h2>Panel Kontrol {auth.loket}</h2>
+                <div style={{fontSize: 13, color: 'var(--text-muted)'}}>Menangani Layanan: <strong>{activeService}</strong></div>
+              </div>
+              <div style={{display: 'flex', gap: 8}}>
+                <select 
+                  value={activeService} 
+                  onChange={e => setActiveService(e.target.value)}
+                  style={{padding: '6px 12px', borderRadius: 'var(--radius-sm)', border: '1px solid var(--border)', background: 'var(--card)'}}
+                >
+                  {SERVICES.map(s => <option key={s} value={s}>Fokus: {s}</option>)}
+                </select>
+                <button className="btn btn-outline" onClick={handleLogout}><LogOut size={16} /> Keluar</button>
+              </div>
+            </div>
+
+            <div style={{display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 20}}>
+              <div className="panel">
+                <h3 className="panel-title" style={{marginBottom: 16}}>Status Loket Saat Ini</h3>
+                {(() => {
+                  const counterState = queueData.counterStatus[auth.loket];
+                  const currentTicket = counterState && counterState.current 
+                    ? queueData.tickets.find(t => t.id === counterState.current) 
+                    : null;
+
+                  return currentTicket ? (
+                    <div style={{textAlign: 'center', padding: '24px 0'}}>
+                      <div style={{fontSize: 12, color: 'var(--text-muted)', marginBottom: 4}}>SEDANG MELAYANI</div>
+                      <div style={{fontSize: 56, fontWeight: 800, fontFamily: 'var(--font-mono)', margin: '8px 0'}}>
+                        #{currentTicket.nomor}
+                      </div>
+                      <div style={{fontSize: 16, fontWeight: 600, marginBottom: 4}}>{currentTicket.nama}</div>
+                      <div style={{fontSize: 13, color: 'var(--text-muted)', marginBottom: 24}}>
+                        {currentTicket.layanan} ({currentTicket.prioritas})
+                      </div>
+
+                      <div style={{display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, marginBottom: 12}}>
+                        <button className="btn btn-outline" onClick={handleRecall}>
+                          <Volume2 size={16} /> Panggil Ulang
+                        </button>
+                        <button className="btn btn-primary" onClick={handleComplete}>
+                          <CheckCircle size={16} /> Selesai
+                        </button>
+                      </div>
+
+                      <div style={{display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8}}>
+                        <button className="btn btn-outline" onClick={handleMiss} style={{color: 'var(--warning)', borderColor: 'var(--warning)'}}>
+                          Terlewat (Absen)
+                        </button>
+                        <select 
+                          onChange={e => { if (e.target.value) handleForward(e.target.value); e.target.value = ''; }}
+                          defaultValue=""
+                          style={{padding: '8px', borderRadius: 'var(--radius-sm)', border: '1px solid var(--border)', background: 'var(--card)', fontSize: 13}}
+                        >
+                          <option value="" disabled>Teruskan ke Layanan...</option>
+                          {SERVICES.filter(s => s !== currentTicket.layanan).map(s => (
+                            <option key={s} value={s}>Teruskan ke {s}</option>
+                          ))}
+                        </select>
+                      </div>
+                    </div>
+                  ) : (
+                    <div style={{textAlign: 'center', padding: '48px 0', color: 'var(--text-muted)'}}>
+                      <div>Loket sedang kosong / siap memanggil antrian.</div>
+                    </div>
+                  );
+                })()}
+
+                <button className="btn btn-primary btn-block btn-lg" onClick={handleCallNext} style={{marginTop: 16}}>
+                  Panggil Antrian Berikutnya (Algoritma 2:1)
+                </button>
+              </div>
+
+              <div className="panel">
+                <h3 className="panel-title" style={{marginBottom: 16}}>Antrian Menunggu ({activeService})</h3>
+                <div style={{maxHeight: 320, overflowY: 'auto'}}>
+                  {queueData.tickets.filter(t => t.layanan === activeService && t.status === STATUS.MENUNGGU).length === 0 ? (
+                    <div style={{color: 'var(--text-muted)', textAlign: 'center', padding: '32px 0'}}>Tidak ada antrian menunggu.</div>
+                  ) : (
+                    <table style={{width: '100%', borderCollapse: 'collapse', fontSize: 13}}>
+                      <thead>
+                        <tr style={{borderBottom: '1px solid var(--border)', textAlign: 'left', color: 'var(--text-muted)'}}>
+                          <th style={{padding: '8px'}}>No</th>
+                          <th style={{padding: '8px'}}>Nama</th>
+                          <th style={{padding: '8px'}}>Kategori</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {queueData.tickets
+                          .filter(t => t.layanan === activeService && t.status === STATUS.MENUNGGU)
+                          .map(t => (
+                            <tr key={t.id} style={{borderBottom: '1px solid var(--border)'}}>
+                              <td style={{padding: '8px', fontFamily: 'var(--font-mono)', fontWeight: 600}}>#{t.nomor}</td>
+                              <td style={{padding: '8px'}}>{t.nama}</td>
+                              <td style={{padding: '8px'}}>
+                                <span className={`badge ${t.prioritas === 'Prioritas' ? 'badge-warning' : 'badge-neutral'}`}>
+                                  {t.prioritas}
+                                </span>
+                              </td>
+                            </tr>
+                          ))}
+                      </tbody>
+                    </table>
+                  )}
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {view === 'tv' && (
+          <div style={{background: '#090a0f', color: '#f8fafc', padding: 24, borderRadius: 'var(--radius-lg)', minHeight: '80vh', display: 'flex', flexDirection: 'column', justifyContent: 'space-between'}}>
+            <div style={{display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid #1e293b', paddingBottom: 16}}>
+              <div style={{display: 'flex', alignItems: 'center', gap: 12}}>
+                <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" style={{color: '#38bdf8'}}>
+                  <rect x="2" y="5" width="20" height="14" rx="2" />
+                  <path d="M16 2v3M8 2v3M2 10h20" />
+                </svg>
+                <h1 style={{fontSize: 24, fontWeight: 700, letterSpacing: '-0.5px', margin: 0}}>Antrekuy — Ruang Informasi TV</h1>
+              </div>
+              <div style={{fontFamily: 'var(--font-mono)', fontSize: 16, color: '#94a3b8'}}>
+                {new Date().toLocaleTimeString('id-ID')}
+              </div>
+            </div>
+
+            <div style={{display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 20, margin: '24px 0'}}>
+              {Object.entries(queueData.counterStatus).map(([counterName, state]) => {
+                const currentTicket = state.current ? queueData.tickets.find(t => t.id === state.current) : null;
+                return (
+                  <div key={counterName} style={{background: '#111827', border: '1px solid #1f2937', borderRadius: '12px', padding: 24, textAlign: 'center'}}>
+                    <div style={{fontSize: 14, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: '1px', marginBottom: 8}}>{counterName}</div>
+                    <div style={{fontSize: 12, color: '#38bdf8', marginBottom: 16}}>({state.service})</div>
+                    <div style={{fontSize: 64, fontWeight: 800, fontFamily: 'var(--font-mono)', color: currentTicket ? '#38bdf8' : '#4b5563', margin: '12px 0'}}>
+                      {currentTicket ? `#${currentTicket.nomor}` : '---'}
+                    </div>
+                    <div style={{fontSize: 16, fontWeight: 600, color: '#e2e8f0', minHeight: 24}}>
+                      {currentTicket ? currentTicket.nama : 'Kosong'}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+
+            <div style={{background: '#111827', border: '1px solid #1f2937', borderRadius: '8px', padding: 16, display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: 14, color: '#94a3b8'}}>
+              <div>Total Antrian Menunggu: <strong style={{color: '#f8fafc', fontFamily: 'var(--font-mono)'}}>{waitingList.length} orang</strong></div>
+              <div>Silakan menunggu panggilan petugas sesuai nomor tiket Anda.</div>
+            </div>
+          </div>
+        )}
+
+        {view === 'admin' && auth && auth.role === 'admin' && (
+          <div>
+            <div style={{display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20}}>
+              <h2>Dashboard Administrator</h2>
+              <div style={{display: 'flex', gap: 8}}>
+                <button className="btn btn-outline" onClick={() => { queueService.exportCSV(); }}><Download size={16} /> Export CSV</button>
+                <button className="btn btn-outline" onClick={() => { if (confirm('Reset seluruh data antrian?')) { setQueueData(queueService.resetAll()); } }} style={{color: 'var(--warning)', borderColor: 'var(--warning)'}}>
+                  <RefreshCw size={16} /> Reset Sistem
+                </button>
+                <button className="btn btn-outline" onClick={handleLogout}><LogOut size={16} /> Keluar</button>
+              </div>
+            </div>
+
+            <div style={{display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 16, marginBottom: 24}}>
+              <div className="panel" style={{padding: 16}}>
+                <div style={{fontSize: 13, color: 'var(--text-muted)'}}>Total Tiket</div>
+                <div style={{fontSize: 32, fontWeight: 700, fontFamily: 'var(--font-mono)', marginTop: 4}}>{queueData.tickets.length}</div>
+              </div>
+              <div className="panel" style={{padding: 16}}>
+                <div style={{fontSize: 13, color: 'var(--text-muted)'}}>Menunggu</div>
+                <div style={{fontSize: 32, fontWeight: 700, fontFamily: 'var(--font-mono)', marginTop: 4, color: 'var(--primary)'}}>
+                  {queueData.tickets.filter(t => t.status === STATUS.MENUNGGU).length}
+                </div>
+              </div>
+              <div className="panel" style={{padding: 16}}>
+                <div style={{fontSize: 13, color: 'var(--text-muted)'}}>Sedang Dilayani</div>
+                <div style={{fontSize: 32, fontWeight: 700, fontFamily: 'var(--font-mono)', marginTop: 4, color: '#2563eb'}}>
+                  {queueData.tickets.filter(t => t.status === STATUS.DILAYANI).length}
+                </div>
+              </div>
+              <div className="panel" style={{padding: 16}}>
+                <div style={{fontSize: 13, color: 'var(--text-muted)'}}>Selesai</div>
+                <div style={{fontSize: 32, fontWeight: 700, fontFamily: 'var(--font-mono)', marginTop: 4, color: '#16a34a'}}>
+                  {queueData.tickets.filter(t => t.status === STATUS.SELESAI).length}
+                </div>
+              </div>
+            </div>
+
+            <div className="panel">
+              <h3 className="panel-title" style={{marginBottom: 16}}>Seluruh Riwayat Tiket</h3>
+              <div style={{maxHeight: 400, overflowY: 'auto'}}>
+                <table style={{width: '100%', borderCollapse: 'collapse', fontSize: 13}}>
+                  <thead>
+                    <tr style={{borderBottom: '1px solid var(--border)', textAlign: 'left', color: 'var(--text-muted)'}}>
+                      <th style={{padding: '8px'}}>Nomor</th>
+                      <th style={{padding: '8px'}}>Nama</th>
+                      <th style={{padding: '8px'}}>Layanan</th>
+                      <th style={{padding: '8px'}}>Kategori</th>
+                      <th style={{padding: '8px'}}>Status</th>
+                      <th style={{padding: '8px'}}>Loket</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {queueData.tickets.map(t => (
+                      <tr key={t.id} style={{borderBottom: '1px solid var(--border)'}}>
+                        <td style={{padding: '8px', fontFamily: 'var(--font-mono)', fontWeight: 600}}>#{t.nomor}</td>
+                        <td style={{padding: '8px'}}>{t.nama}</td>
+                        <td style={{padding: '8px'}}>{t.layanan}</td>
+                        <td style={{padding: '8px'}}>{t.prioritas}</td>
+                        <td style={{padding: '8px'}}>
+                          <span className={`badge ${
+                            t.status === STATUS.MENUNGGU ? 'badge-neutral' :
+                            t.status === STATUS.DILAYANI ? 'badge-primary' :
+                            t.status === STATUS.SELESAI ? 'badge-success' : 'badge-warning'
+                          }`}>
+                            {t.status}
+                          </span>
+                        </td>
+                        <td style={{padding: '8px'}}>{t.loket || '-'}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        )}
+
+      </main>
     </div>
   );
 }
